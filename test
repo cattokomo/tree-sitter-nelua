@@ -1,1 +1,1 @@
-return @function(a: record{a:integer} <noinit>): (void, void)
+a = #["a"]#

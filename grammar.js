@@ -31,11 +31,31 @@ const PREC = {
 module.exports = grammar({
   name: "nelua",
 
-  externals: ($) => [$.block_start, $.block_content, $.block_end],
+  externals: ($) => [
+    $._block_comment_start,
+    $._block_comment_content,
+    $._block_comment_end,
+
+    $._block_preprocess_start,
+    $._block_preprocess_content,
+    $._block_preprocess_end,
+
+    $._preprocess_expr_start,
+    $._preprocess_expr_end,
+
+    $._preprocess_name_start,
+    $._preprocess_name_end,
+
+    $._preprocess_inline_content,
+
+    $._string_start,
+    $._string_content,
+    $._string_end,
+  ],
 
   extras: ($) => [/[\n\r]/, /\s/, $.comment],
 
-  inline: ($) => [$._expression],
+  inline: ($) => [$._expression, $.comment],
 
   rules: {
     // TODO: add the actual grammar rules
@@ -65,6 +85,7 @@ module.exports = grammar({
             $.for_statement,
             $.switch_statement,
             $.preproces_statement,
+            $.assign_statement,
           ),
           optional(";"),
         ),
@@ -201,14 +222,15 @@ module.exports = grammar({
         alias("end", $.switch_end),
       ),
 
+    assign_statement: ($) => seq($._vars, "=", $._expression),
+
     preproces_statement: ($) =>
       choice(
         seq("##", alias(/[^\n\r]*/, $.preprocess_content)),
         seq(
-          "##",
-          $.block_start,
-          alias($.block_content, $.preprocess_content),
-          $.block_end,
+          $._block_preprocess_start,
+          alias($._block_preprocess_content, $.preprocess_content),
+          $._block_preprocess_end,
         ),
       ),
 
@@ -217,6 +239,7 @@ module.exports = grammar({
     _expression: ($) =>
       prec.left(
         choice(
+          $._call,
           $.number,
           $.string,
           $.boolean,
@@ -233,7 +256,7 @@ module.exports = grammar({
         ),
       ),
 
-    _exprprim: ($) => choice($._ppcallprim, $.id, $.do_expr, $.paren),
+    _exprprim: ($) => prec(2, choice($._ppcallprim, $.id, $.do_expr, $.paren)),
 
     varargs: ($) => "...",
 
@@ -245,7 +268,7 @@ module.exports = grammar({
 
     boolean: ($) => choice("true", "false"),
 
-    paren: ($) => seq("(", $._expression, ")"),
+    paren: ($) => prec(2, seq("(", $._exprs, ")")),
 
     do_expr: ($) =>
       seq(
@@ -256,14 +279,12 @@ module.exports = grammar({
         ")",
       ),
 
-    string: ($) => choice($._string_short, $._string_long),
-    _string_short: ($) => {
-      const content = prec(1, /[^\n'"]*/);
-      const double_quote = seq('"', content, '"');
-      const single_quote = seq("'", content, "'");
-      return token(choice(double_quote, single_quote));
-    },
-    _string_long: ($) => seq($.block_start, $.block_content, $.block_end),
+    string: ($) =>
+      seq(
+        $._string_start,
+        alias($._string_content, $.string_content),
+        $._string_end,
+      ),
 
     number: ($) => choice($._hex_number, $._bin_number, $._dec_number),
     _dec_number: ($) =>
@@ -341,9 +362,17 @@ module.exports = grammar({
       ),
 
     preprocess_expr: ($) =>
-      seq("#[", alias($._expression, $.preprocess_content), "]#"),
+      seq(
+        $._preprocess_expr_start,
+        alias($._preprocess_inline_content, $.preprocess_inline_content),
+        $._preprocess_expr_end,
+      ),
     preprocess_name: ($) =>
-      seq("#|", alias($._expression, $.preprocess_content), "|#"),
+      seq(
+        $._preprocess_name_start,
+        alias($._expression, $.preprocess_inline_content),
+        $._preprocess_name_end,
+      ),
     _ppcallprim: ($) => alias(seq($._name, "!"), $.preprocess_expr),
 
     init_list: ($) =>
@@ -367,7 +396,10 @@ module.exports = grammar({
       ),
 
     _typedecl: ($) =>
-      prec(2, seq(alias($._name, $.argname), ":", $.type, optional($._annots))),
+      alias(
+        prec(2, seq(alias($._name, $.id), ":", $.type, optional($._annots))),
+        $.iddecl,
+      ),
 
     id: ($) => choice($.preprocess_expr, $._name),
     iddecl: ($) => seq($._iddecl, optional($._annots)),
@@ -380,29 +412,53 @@ module.exports = grammar({
 
     // Suffixes
 
-    default_call: ($) => $._callargs,
+    call: ($) => $._callargs,
     call_method: ($) => seq(":", alias($._name, $.funcname), $._callargs),
     dot_index: ($) => seq(".", $._name),
     colon_index: ($) => seq(":", $._name),
     key_index: ($) => seq("[", $._expression, "]"),
 
-    indexsuffix: ($) => choice($.dot_index, $.key_index),
-    callsuffix: ($) => choice($.default_call, $.call_method),
+    _indexsuffix: ($) => choice($.dot_index, $.key_index),
+    _callsuffix: ($) => choice($.call, $.call_method),
 
-    _call: ($) =>
-      prec.left(
-        seq(
-          repeat1(
-            choice($._exprprim, seq(repeat1($.indexsuffix), $.callsuffix)),
-          ),
+    _var: ($) =>
+      prec(
+        1,
+        choice(
+          seq($._exprprim, seq(repeat($._callsuffix), $._indexsuffix)),
+          $.id,
+          seq("$", $.id),
         ),
       ),
 
+    _call: ($) =>
+      prec(
+        2,
+        seq(
+          alias($._exprprim, $.callname),
+          seq(repeat($._indexsuffix), $._callsuffix),
+        ),
+      ),
+
+    //    _exprsuffixed: $ =>
+    //      prec(
+    //        2,
+    //        choice(
+    //        seq(
+    //          alias($._exprprim, $.callname),
+    //
+    //        )
+    //        )
+    //      )
+
     // Lists
+
+    _exprs: ($) => seq($._expression, repeat_seq(",", $._expression)),
+    _vars: ($) => seq($._var, repeat_seq(",", $._var)),
 
     _callargs: ($) =>
       prec(
-        2,
+        1,
         choice(
           seq(
             "(",
@@ -495,12 +551,14 @@ module.exports = grammar({
     _enum_field: ($) => seq($._name, optional_seq("=", $._expression)),
 
     func_type: ($) =>
-      seq(
-        "function",
-        "(",
-        optional($._functypeargs),
-        ")",
-        optional_seq(":", $._funcrets),
+      prec.left(
+        seq(
+          "function",
+          "(",
+          optional($._functypeargs),
+          ")",
+          optional_seq(":", $._funcrets),
+        ),
       ),
 
     array_type: ($) =>
@@ -545,34 +603,41 @@ module.exports = grammar({
           $.variant_type,
           prec.left(
             PREC.TGENERIC,
-            seq(
-              alias($.id, $.genericname),
-              alias($._typegeneric, $.genericargs),
+            alias(
+              seq(
+                alias($.id, $.genericname),
+                alias($._typegeneric, $.genericargs),
+              ),
+              $.generic_type,
             ),
           ),
           repeat1_seq(
             choice(
-              ...["*", "?", seq("[", optional($._expression))].map((c) =>
-                prec.left(PREC.TUNARY, c),
-              ),
+              ...[
+                alias("*", $.pointer_type),
+                alias("?", $.optional_type),
+                alias(seq("[", optional($._expression), "]"), $.array_type),
+              ].map((c) => prec.left(PREC.TUNARY, c)),
             ),
             $.type,
           ),
           prec.left(
             PREC.TVARIS,
-            seq($.type, "|", $.type, repeat_seq("|", $.type)),
+            alias(
+              seq($.type, "|", $.type, repeat_seq("|", $.type)),
+              $.variant_type,
+            ),
           ),
         ),
       ),
 
     comment: ($) =>
       choice(
-        seq("--", field("content", /[^\n\r]*/)),
+        seq("--", /[^\n\r]*/),
         seq(
-          "--",
-          $.block_start,
-          field("content", $.block_content),
-          $.block_end,
+          $._block_comment_start,
+          $._block_comment_content,
+          $._block_comment_end,
         ),
       ),
   },
